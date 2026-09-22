@@ -1,0 +1,11 @@
+[package]
+name = "tidymac"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+tidymac-core = { path = "../tidymac-core" }
+
+[lints]
+workspace = true

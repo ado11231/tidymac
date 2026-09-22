@@ -1,0 +1,11 @@
+[package]
+name = "tidymac-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+walkdir.workspace = true
+
+[lints]
+workspace = true
