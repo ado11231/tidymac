@@ -1,39 +1,12 @@
-# tidymac
+<h1 align="center">tidymac</h1>
 
-tidymac is a planned macOS terminal tool for viewing disk usage and safely removing files that can
-be recreated. It combines a disk browser and cleanup tool in one binary.
+<p align="center">See what is filling your Mac's disk, and safely clear files your apps can make again. All from one terminal program.</p>
 
-## Project status
+<br>
 
-The Cargo workspace is ready. Application features are not implemented yet.
+* **Status:** in development. Only the start of the scanner is built. Nothing below works yet.
 
-The `docs/` folder defines the scope, safety rules, interface, and planned implementation.
-
-## Phase 1
-
-P1 has two goals:
-
-- Browse the current user's home directory and show each folder's allocated size, file count, and
-  relative size.
-- Review and remove supported caches, logs, and build artifacts that macOS or their applications
-  can recreate.
-
-Users can also scan a narrower path. P1 will not claim to scan every file on the startup disk.
-
-## Safety
-
-Cleanup follows these rules:
-
-1. A cleanup starts as a dry run.
-2. The complete resolved path list is shown before confirmation.
-3. Every target passes through validation implemented in Rust.
-4. Protected locations such as Documents, Desktop, Downloads, iCloud Drive, Keychains, and
-   `~/.ssh` are rejected.
-5. P1 moves items to the Trash. It does not permanently delete them or empty the Trash.
-
-See [Safety model](docs/SAFETY.md) for the full requirements.
-
-## Planned installation
+**1. Install tidymac (Planned)**
 
 ```sh
 brew install tidymac
@@ -45,19 +18,32 @@ or:
 cargo install tidymac
 ```
 
-The minimum planned version is macOS 13. Releases will support Apple silicon and Intel Macs.
+**2. Open It**
 
-Some folders require Full Disk Access. If access is missing, tidymac will report skipped folders.
+```sh
+tidymac
+```
 
-## Documentation
+**3. Use The Tabs**
 
-| Document | Purpose |
-|---|---|
-| [Features and interface](docs/FEATURES.md) | Product scope, terminal behavior, and commands |
-| [Safety and cleanup rules](docs/SAFETY.md) | Path controls, confirmation, and rule format |
-| [Architecture and roadmap](docs/ARCHITECTURE.md) | Technical design, milestones, and release checks |
+| Tab | What It Does |
+| --- | --- |
+| Dashboard | Shows how full the disk is, and what can be cleaned. |
+| Disk | Browses your folders by size. |
+| Clean | Moves files your apps can make again to the Trash, after you review every path. |
 
-## License
+* Everything happens inside the program. The only options are `--version` and `--help`.
 
-This project is dual-licensed under [MIT](LICENSE-MIT) or
-[Apache 2.0](LICENSE-APACHE), at your option.
+<br>
+
+* Needs macOS 13 or later, on Apple silicon or Intel.
+* Some folders need Full Disk Access, a macOS permission. Without it, tidymac lists the folders it skipped.
+* Cleanup never deletes files for good. Everything goes to the Trash.
+* Cleanup never touches your own folders, such as Documents, Desktop, Downloads, iCloud Drive, Keychains, and `~/.ssh`.
+
+<p align="center">
+  <a href="docs/FEATURES.md">Features</a> ·
+  <a href="docs/SAFETY.md">Safety</a> ·
+  <a href="docs/ARCHITECTURE.md">Architecture</a> ·
+  <a href="docs/ROADMAP.md">Roadmap</a>
+</p>

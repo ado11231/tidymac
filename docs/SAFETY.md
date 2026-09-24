@@ -1,86 +1,104 @@
-# Safety and cleanup rules
+# Safety
 
-These rules apply to bundled rules, user rules, Disk tab selections, and custom cleaners.
+* The rules tidymac follows whenever it changes a file or a setting.
+* They cover every tab that changes something: Disk, Clean, SSH, Dotfiles, Startup, and Settings. They also cover bundled rules, your own rules, and custom cleaners.
+* Nothing here is built yet. For progress, read [ROADMAP.md](ROADMAP.md).
 
-## Cleanup contract
+## Contents
 
-Every cleanup follows the same sequence:
+1. [Key Terms](#key-terms)
+2. [How A Cleanup Runs](#how-a-cleanup-runs)
+3. [The Path Check](#the-path-check)
+4. [Protected Paths](#protected-paths)
+5. [What The Path Check Does](#what-the-path-check-does)
+6. [Cleanup Rules](#cleanup-rules)
+7. [Risk Tiers And Running Apps](#risk-tiers-and-running-apps)
+8. [SSH And Dotfile Changes](#ssh-and-dotfile-changes)
+9. [Admin Rights](#admin-rights)
+10. [Settings And Startup Changes](#settings-and-startup-changes)
+11. [Tests](#tests)
 
-1. Build a dry-run plan.
-2. Show every resolved path.
-3. Show the item count, estimated size, and Trash destination.
-4. Ask for confirmation.
-5. Validate each path again.
-6. Move approved items to the Trash.
+## Key Terms
 
-P1 cannot permanently delete files or empty the Trash. `--execute` enables changes and asks for
-confirmation. Automation requires both `--execute` and `--yes`. The `--yes` flag skips only the
-prompt, not path output or validation.
+| Term | Meaning |
+| --- | --- |
+| **Cleanup root** | A folder that cleanup may remove items from. The list is fixed in the Rust code. |
+| **Protected path** | A folder tidymac never touches, including everything inside it. |
+| **Symbolic link** | A file that points to another path. |
+| **Real path** | A path after following every symbolic link and `..`. |
+| **Device and inode** | Two numbers that identify a file, even if it is renamed. |
+| **Allow list** | A fixed list, in the Rust code, of the only files or settings a feature may change. |
+| **`sudo`** | Runs one command with admin rights, after asking for your password. |
 
-Space may remain in use until the user empties the Trash. Report this after a successful cleanup.
+## How A Cleanup Runs
 
-## Validation boundary
+1. Make a plan without changing anything. This is a dry run.
+2. Show every path the plan found.
+3. Show how many items there are, how much space they use, and that they go to the Trash.
+4. Ask you to confirm.
+5. Check each path again.
+6. Move the items to the Trash.
 
-Rust enforces safety. TOML files cannot change it. Every filesystem target must pass through:
+* P1 never deletes files for good and never empties the Trash.
+* Cleanup only happens in the terminal interface. There is no command or option that skips the path list or the question.
+* After a cleanup, tidymac reminds you the space is only freed once you empty the Trash.
 
-```rust
-fn validate_deletable(path: &Path) -> Result<ValidatedPath, SafetyError>
-```
+## The Path Check
 
-`ValidatedPath` fields are private. Cleanup code cannot create one without validation.
+* Safety lives in the Rust code. TOML rules cannot change it.
+* Every path must pass one function before it can be moved:
 
-A target must be a strict descendant of a compiled cleanup root. P1 allows narrow roots for:
+  ```rust
+  fn validate_deletable(path: &Path) -> Result<ValidatedPath, SafetyError>
+  ```
 
-- Developer caches under `~/Library/Developer`
-- Named caches under `~/Library/Caches`
-- Logs under `~/Library/Logs`
-- Saved state under `~/Library/Saved Application State`
-- Reviewed package-manager caches
-- Specific Mail download caches
-- Specific system logs handled by a reviewed cleaner
+* Only this function can make a `ValidatedPath`, so no other code can skip the check.
+* A path must be inside a cleanup root, and never the root itself.
+* P1 has these cleanup roots:
+  1. Developer caches in `~/Library/Developer`.
+  2. Named caches in `~/Library/Caches`.
+  3. Logs in `~/Library/Logs`.
+  4. Saved app state in `~/Library/Saved Application State`.
+  5. Package manager caches that have been reviewed.
+  6. Certain Mail download caches.
+  7. Certain system logs, cleaned by a reviewed cleaner.
+* A rule cannot add a cleanup root.
 
-A rule cannot add a root or target the root itself.
+## Protected Paths
 
-## Protected paths
+* tidymac always refuses these, and everything inside them:
 
-Always reject these protected targets:
+| Path | Why |
+| --- | --- |
+| `/System`, `/usr` | macOS system files. |
+| `/Library` itself | Shared by apps and services. |
+| Your home folder itself | Far too broad. |
+| `~/Documents`, `~/Desktop`, `~/Downloads` | Your own files. |
+| `~/Library/Mobile Documents`, `~/Library/CloudStorage` | iCloud and other cloud files. |
+| `~/Library/Keychains`, `~/.ssh` | Passwords and keys. |
+| Any `.git` folder | Repository history. |
+| The top folder of any disk | Far too broad. |
 
-| Path | Reason |
-|---|---|
-| `/System`, `/usr`, and their descendants | System files |
-| `/Library` itself | Shared application and service data |
-| The user's home directory | Too broad |
-| `~/Documents`, `~/Desktop`, and `~/Downloads` | User files |
-| `~/Library/Mobile Documents` and `~/Library/CloudStorage` | Cloud data |
-| `~/Library/Keychains` and `~/.ssh` | Credentials |
-| Any `.git` directory | Repository data |
-| Any mounted volume root | Too broad |
+* Folders inside `/Library` are not P1 targets. Adding one later needs a safety review and a change to the Rust code.
 
-Protected folders include all descendants.
+## What The Path Check Does
 
-Named paths under `/Library` are not P1 targets. Adding one later requires a safety review and a
-compiled allow-list change.
+1. Refuses empty paths, relative paths, paths it does not support, and the top folder of any disk.
+2. Finds your home folder.
+3. Follows each part of the path on disk. It does not just remove `..` from the text.
+4. Refuses symbolic links that lead out of a cleanup root or into a protected path.
+5. Confirms the path is inside its cleanup root.
+6. Saves the real path, device, inode, and other details it needs.
 
-## Path checks
+* Right before moving an item, tidymac checks its real path, device, and inode again. If anything changed, it skips that item.
+* Where macOS allows it, tidymac moves files in a way that cannot be tricked by a link swapped in after the review.
+* If tidymac cannot be sure a file is the same one you reviewed, it skips it.
+* Any case macOS cannot protect against must be written down before M4 is done.
 
-Validation must:
+## Cleanup Rules
 
-1. Reject relative, empty, unsupported, and volume-root paths.
-2. Resolve the current user's home directory.
-3. Resolve existing components without trusting lexical `..` cleanup.
-4. Reject symbolic links that leave an approved root or enter a protected path.
-5. Confirm the target is below its compiled root.
-6. Record its canonical path, device, inode, and relevant metadata.
-
-Immediately before execution, resolve the target again and compare its path, device, and inode.
-Cancel the item if any value changed. Use macOS operations that avoid following replaced symbolic
-links where possible, and fail closed when identity cannot be confirmed. Document any remaining
-platform limitation before M4 is complete.
-
-## Cleanup rules
-
-Bundled TOML rules live in `rules/`. User rules live in `~/.config/tidymac/rules/`. A user rule may
-replace a bundled rule with the same `id`, but it still uses the compiled safety policy.
+* Bundled rules live in `rules/`. Your own rules live in `~/.config/tidymac/rules/`.
+* Your rule can replace a bundled rule by using the same `id`. It still goes through the same Rust checks.
 
 ```toml
 [[rule]]
@@ -89,56 +107,104 @@ name = "Xcode DerivedData"
 category = "developer"
 tier = "safe"
 paths = ["~/Library/Developer/Xcode/DerivedData/*"]
-description = "Build intermediates. Xcode recreates them during the next build."
+description = "Build files. Xcode makes them again during the next build."
 regenerates = true
 requires_quit = ["com.apple.dt.Xcode"]
 min_age_days = 0
 ```
 
-Required fields are `id`, `name`, `category`, `tier`, `paths`, and `description`. Optional fields
-are `regenerates`, `requires_quit`, and `min_age_days`.
+| Field | Required | Meaning |
+| --- | --- | --- |
+| `id` | Yes | Lowercase letters, numbers, and hyphens. |
+| `name` | Yes | The name shown in the Clean tab. |
+| `category` | Yes | `developer`, `package`, `application`, `browser`, `logs`, or `system`. |
+| `tier` | Yes | `safe`, `caution`, or `expert`. |
+| `paths` | Yes | Full paths. `~` may only be used at the start. |
+| `description` | Yes | What the files are, and what happens when they are removed. |
+| `regenerates` | No | Whether the app makes the files again. |
+| `requires_quit` | No | The IDs of apps that must be closed first. |
+| `min_age_days` | No | Skip files changed within this many days. |
 
-- IDs contain lowercase letters, numbers, and hyphens.
-- Categories are `developer`, `package`, `application`, `browser`, `logs`, or `system`.
-- Tiers are `safe`, `caution`, or `expert`.
-- Paths must be absolute. `~` is allowed only as the first component.
-- Unknown fields, unsupported globs, and unsafe static paths are rejected.
-- Every expanded target is validated again. No matches is a valid result.
+* tidymac refuses unknown fields, patterns it does not support, and fixed paths that are not safe.
+* Every path a pattern matches is checked again. Matching nothing is fine.
+* Never call files junk or useless without saying why they are safe to remove.
+* Before adding a rule:
+  1. Run the rule and safety tests.
+  2. Read every path its dry run finds.
+  3. Write down the macOS and app versions you tested with.
 
-Descriptions must say what the files contain and what removal does. Do not call files junk or
-unnecessary without explaining why they are safe to remove.
+## Risk Tiers And Running Apps
 
-## Risk tiers and running applications
+| Tier | How It Is Selected | Why |
+| --- | --- | --- |
+| `safe` | Already selected. | The files come back, and the only cost is time. |
+| `caution` | You select it. | You may need to download, index, or sign in again. |
+| `expert` | You select it and type a confirmation. | The files may not exist anywhere else. |
 
-| Tier | Selection behavior |
-|---|---|
-| `safe` | Selected by default because the data is recreated at only a time cost |
-| `caution` | Selected manually because removal may require downloads, indexing, or sign-in |
-| `expert` | Selected manually with typed confirmation because data may be unique |
+* A tier never skips a check or the question.
+* tidymac checks the apps in `requires_quit` when it makes the plan, and again before moving files. If one of them opened in between, its items are skipped.
+* Custom cleaners, such as Docker or simulator cleanup, may use the app's own tool. They still show a plan, and go through the same checks and question.
 
-Tiers never weaken validation or confirmation.
+## SSH And Dotfile Changes
 
-Rules may list application bundle identifiers that must be closed. Check them when creating the
-plan and again before execution. Cancel affected targets if an application starts between checks.
+* These change files where they are, so they do not use `ValidatedPath` or the Trash. They have their own allow list instead.
 
-Custom cleaners, such as Docker or simulator cleanup, may use an application API. They must produce
-a reviewable plan and follow equivalent validation, confirmation, and process checks.
+| Feature | May Change |
+| --- | --- |
+| Dotfile editing | Only the files listed in the Dotfiles tab. |
+| SSH permissions | `~/.ssh` and the files directly inside it. |
+| Known hosts | `~/.ssh/known_hosts`, only through `ssh-keygen -R`. |
+| Agent keys | Nothing on disk. `ssh-add` only changes the running agent. |
 
-Before merging a rule, run parsing and safety tests, inspect every dry-run target, and record the
-tested macOS and application versions.
+* Every change must:
+  1. Save the old content or permissions first, so it can be undone.
+  2. Refuse symbolic links that lead out of your home folder.
+  3. Write to a temporary file in the same folder, then swap it in, so a crash never leaves half a file.
+* Cleanup can still never touch `~/.ssh`.
+* tidymac never reads what is inside a private key. Key details come from `ssh-keygen`.
+* Exports:
+  1. Never include private keys, `~/.netrc`, `~/.aws/credentials`, `~/.npmrc`, or `~/.pypirc`.
+  2. Show you anything that looks like a token or password before writing the archive.
+
+## Admin Rights
+
+* tidymac never runs as root. If you start it with `sudo`, it stops and explains why: it would find root's home folder instead of yours.
+* A change that needs admin rights runs one command with `sudo`, after showing you that command.
+* The terminal screen pauses while `sudo` asks for your password, then comes back.
+* Cleanup never uses `sudo`.
+
+## Settings And Startup Changes
+
+| Feature | May Change | How |
+| --- | --- | --- |
+| Power mode | Low Power Mode and High Power Mode, for battery and charger | `sudo pmset` |
+| Graphics switching | `gpuswitch` | `sudo pmset` |
+| Wake settings | `womp`, `powernap`, `tcpkeepalive` | `sudo pmset` |
+| Refresh rate | Which mode a connected display uses | CoreGraphics |
+| Startup items | Whether a login item, launch agent, or launch daemon runs | `launchctl` or the login item list, with `sudo` for launch daemons |
+
+* tidymac refuses any `pmset` setting not in this table.
+* Before each change, tidymac saves the old value in `~/.local/state/tidymac/`. Undo puts it back.
+* A new refresh rate switches back after 15 seconds unless you keep it.
+* Items in `/System/Library` are never changed.
+* Launch agent and launch daemon files are never edited or deleted. tidymac only changes whether they run.
 
 ## Tests
 
-Use temporary directories to cover:
-
-- `..` traversal, redundant separators, and paths outside approved roots
-- Targets equal to a cleanup root, home directory, or volume root
-- Protected paths reached through alternate spellings
-- Symbolic-link escapes and links swapped in after review
-- Device or inode changes after review
-- Invalid UTF-8 or unsupported names
-- User rules that try to broaden a bundled rule
-- `--yes` without `--execute`
-
-Automated tests must not use a real home directory. The M4 manual test must move a low-risk
-temporary target to the Trash and restore it with Finder's Put Back action.
+* Use temporary folders to test:
+  1. `..` tricks, doubled slashes, and paths outside cleanup roots.
+  2. A path that is a cleanup root, the home folder, or the top folder of a disk.
+  3. Protected paths written in other ways.
+  4. Symbolic links that lead out, and links swapped in after the review.
+  5. A device or inode that changed after the review.
+  6. Names that are not valid `UTF-8`, or that tidymac does not support.
+  7. Your own rules that try to reach more than a bundled rule.
+  8. Dotfile edits outside the allow list, or through a symbolic link that leads out.
+  9. Permission fixes and dotfile edits undone from their backups.
+  10. Exports that contain a private key or something that looks like a token.
+  11. Starting tidymac as root.
+  12. `pmset` settings outside the allow list.
+  13. Settings and startup items undone from their saved values.
+  14. A refresh rate that is not kept switching back.
+* Automated tests never use a real home folder, and never change real Mac settings.
+* The M4 manual test moves a harmless temporary file to the Trash, then restores it with Finder's Put Back.

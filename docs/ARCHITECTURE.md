@@ -1,107 +1,173 @@
-# Architecture and roadmap
+# Architecture
 
-tidymac is a Cargo workspace with a reusable core library and a terminal application.
+* How tidymac is built: its parts, how data moves between them, and what each file does.
+* For people working on the code. To learn what tidymac does, read [FEATURES.md](FEATURES.md).
+
+## Contents
+
+1. [Overview](#overview)
+2. [How The Code Is Organized](#how-the-code-is-organized)
+3. [How Data Moves](#how-data-moves)
+4. [The Scanner](#the-scanner)
+5. [Cleanup](#cleanup)
+6. [SSH And Dotfiles](#ssh-and-dotfiles)
+7. [Settings And Startup](#settings-and-startup)
+8. [Dependencies](#dependencies)
+9. [Platform Support](#platform-support)
+10. [File Reference](#file-reference)
+
+## Overview
+
+* tidymac is split into two crates. A crate is one Rust package.
+  1. **`tidymac-core`** is the library. It scans, measures sizes, reads rules, checks paths, and plans cleanups. It never draws anything on screen.
+  2. **`tidymac`** is the program you run. It holds the screens and keyboard input. It only accepts `--version` and `--help`, read from `std::env::args` without an argument parsing crate.
+* `tidymac` uses `tidymac-core`. `tidymac-core` does not use `tidymac`.
+
+## How The Code Is Organized
 
 ```text
 tidymac/
-├── Cargo.toml
+├── Cargo.toml                 Workspace settings
 ├── crates/
-│   ├── tidymac-core/
-│   │   ├── src/
-│   │   │   ├── scan.rs
-│   │   │   ├── size.rs
-│   │   │   ├── rules.rs
-│   │   │   ├── safety.rs
-│   │   │   └── clean.rs
-│   │   └── tests/
-│   └── tidymac/
+│   ├── tidymac-core/          The library
+│   │   └── src/
+│   │       ├── lib.rs
+│   │       ├── scan.rs
+│   │       ├── size.rs
+│   │       ├── rules.rs
+│   │       ├── safety.rs
+│   │       └── clean.rs
+│   └── tidymac/               The program
 │       └── src/
-│           └── ui/
-├── rules/
-└── .github/workflows/
+│           └── main.rs
+├── docs/
+└── .github/workflows/ci.yml
 ```
 
-`tidymac-core` owns scanning, size calculation, rules, validation, and cleanup planning. It must not
-depend on terminal rendering. The `tidymac` crate owns commands, terminal state, rendering, and
-input.
+* These are planned, but do not exist yet:
 
-## Data flow
+| Path | Will Hold |
+| --- | --- |
+| `crates/tidymac-core/tests/` | Tests that use the library from outside. |
+| `crates/tidymac/src/ui/` | The terminal screens. |
+| `rules/` | The bundled cleanup rules. |
+
+## How Data Moves
+
+### A Scan
 
 ```text
 scan request
-    -> directory walker
-    -> file metadata
-    -> indexed tree
-    -> terminal or JSON output
-
-cleanup selection
-    -> rule expansion
-    -> path validation
-    -> path review
-    -> confirmation
-    -> execution-time validation
-    -> Trash
+    -> walk the folders
+    -> read each file's details
+    -> build the folder tree
+    -> show it on screen
 ```
 
-Only the validated path type described in [Safety and cleanup rules](SAFETY.md) can reach the
-cleanup executor.
+### A Cleanup
 
-## Scanner design
+```text
+selected rules
+    -> find the paths each rule matches
+    -> check each path
+    -> show every path to the user
+    -> ask to confirm
+    -> check each path again
+    -> move it to the Trash
+```
 
-- Start in the current user's home directory unless another path is supplied.
-- Stay on the starting device and report skipped mount points.
-- Record symbolic links without following them.
-- Calculate allocated size from `st_blocks * 512`.
-- Deduplicate hard links by `(st_dev, st_ino)`.
-- Store the tree in an indexed arena such as `Vec<Node>`.
-- Stream entries, progress, and path-specific errors through a channel.
-- Mark results incomplete when a folder cannot be read.
+* Only a checked path, a `ValidatedPath`, can reach the code that moves files. See [SAFETY.md](SAFETY.md).
 
-Allocated size is an estimate. Sparse files may have a larger apparent size, and APFS clones may
-share extents that file metadata cannot measure. The disk gauge must use volume statistics.
+## The Scanner
 
-## Cleanup design
+* Starts in your home folder.
+* Stays on the disk it started on, and lists any other disks it skipped.
+* Lists symbolic links, but does not follow them. A symbolic link is a file that points to another path.
+* Measures the space each file uses on disk as `st_blocks * 512`.
+* Counts a file with several names, a hard link, only once. It spots them by `(st_dev, st_ino)`, two numbers that identify a file.
+* Keeps every file and folder in one list, `Vec<Node>`. Each entry finds its parent by its place in the list.
+* Sends each entry, its progress, and any errors to the screen while it runs.
+* Marks the scan incomplete when a folder cannot be read.
+* The sizes are estimates:
+  1. Some files skip empty parts, so their length is larger than the space they use.
+  2. On APFS, copied files can share space, and file details cannot show this.
+  3. So the disk gauge uses the disk's own totals instead.
 
-Most cleanup targets are TOML rules compiled into the binary. User rules load from
-`~/.config/tidymac/rules/`. Targets needing application-specific inspection implement a `Cleaner`
-trait. All paths use the same compiled safety policy.
+## Cleanup
+
+* Most cleanup targets come from TOML rules built into the program.
+* Your own rules load from `~/.config/tidymac/rules/`.
+* Targets that need an app's own tool, such as Docker, use a `Cleaner` trait instead of a rule.
+* All of them go through the same safety checks.
+
+## SSH And Dotfiles
+
+* Both change files where they are, so they do not use `ValidatedPath` or the Trash.
+* A separate allow list in `tidymac-core` names every file they may change.
+* Before each change, tidymac saves the old content or permissions.
+* It writes the new content to a temporary file, then swaps it in, so a crash never leaves half a file.
+* tidymac runs the usual tools instead of writing its own:
+
+| Need | Tool |
+| --- | --- |
+| Key details and fingerprints | `ssh-keygen -l` |
+| Agent keys | `ssh-add` |
+| Removing known hosts | `ssh-keygen -R` |
+| Checking a file for mistakes | `ssh -G`, `zsh -n`, `bash -n`, `git config --list --file` |
+| Editing | Your editor, from `$VISUAL` or `$EDITOR` |
+
+## Settings And Startup
+
+* Both change Mac settings instead of files. tidymac saves the old value before each change, and undo puts it back.
+* The allow list in `tidymac-core` names every setting and startup action they may use.
+* A change that needs admin rights runs one command with `sudo`. tidymac itself never runs as root.
+* tidymac runs the usual tools instead of writing its own:
+
+| Need | Tool |
+| --- | --- |
+| Power mode, graphics switching, wake settings | `pmset` |
+| Apps keeping the Mac awake | `pmset -g assertions` |
+| Why the Mac woke overnight | `pmset -g log` |
+| Refresh rates | CoreGraphics display modes |
+| Background items | `sfltool dumpbtm` |
+| Turning launch agents and daemons off or on | `launchctl` |
 
 ## Dependencies
 
-Keep versions in `Cargo.toml`. Confirm each dependency with a small implementation test.
+* Versions live in `Cargo.toml`. Try each new crate in a small test before using it.
 
-| Need | Candidate |
-|---|---|
-| Terminal | `ratatui` with Crossterm |
-| Traversal | `ignore` and `rayon` |
-| Commands | `clap` |
-| TOML | `serde` and `toml` |
-| Embedded rules | `include_dir` |
-| Process checks | `sysinfo` or a macOS API |
-| Trash | A library or macOS API that supports Finder restoration |
-| Errors | `thiserror`, with `anyhow` at the application boundary if needed |
+| Need | Crate | Status |
+| --- | --- | --- |
+| Walking folders | `walkdir` | In use |
+| Temporary folders in tests | `tempfile` | In use |
+| Terminal screens | `ratatui` with Crossterm | Candidate |
+| Faster walking | `ignore` and `rayon` | Candidate |
+| Reading TOML | `serde` and `toml` | Candidate |
+| Building rules into the program | `include_dir` | Candidate |
+| Checking for running apps | `sysinfo` or a macOS API | Candidate |
+| Moving to the Trash | A crate or macOS API that works with Finder's Put Back | Candidate |
+| Writing archives | `tar` and `flate2` | Candidate |
+| Changing display modes | `core-graphics` | Candidate |
+| Errors | `thiserror`, and `anyhow` in the `tidymac` crate if needed | Candidate |
 
-The minimum platform is macOS 13 on Apple silicon and Intel. Do not assume every path uses APFS.
-Unsupported filesystem behavior must fail clearly.
+## Platform Support
 
-## Roadmap
+* macOS 13 or later, on Apple silicon and Intel.
+* Not every disk uses APFS. If a disk does something tidymac does not support, it must stop with a clear message.
+* The workspace does not allow `unsafe` code. macOS calls must go through a crate that handles that.
 
-| Milestone | Work | Acceptance |
-|---|---|---|
-| M0 Foundation | Workspace, licenses, formatting, linting, and CI | Both crates build for supported targets and tests pass |
-| M1 Scanner | Walk one device, report allocated blocks, deduplicate hard links, stream progress and errors | Synthetic tests cover links, sparse files, nested folders, permissions, and device boundaries |
-| M2 Disk UI | Column browser, sorting, navigation, progress, warnings, and disk gauge | The interface stays responsive and marks incomplete scans |
-| M3 Rules | TOML schema, loaders, reviewed rule packs, and text or JSON dry runs | Every bundled rule loads and resolves only permitted targets without changing files |
-| M4 Cleanup | Validation gate, process checks, review, confirmation, and Trash support | Adversarial safety tests pass and Finder can restore a test item |
-| M5 P1 release | Universal binaries, Homebrew and Cargo publishing, and Full Disk Access guidance | Automated tests and manual release checks pass on Apple silicon and Intel |
-| M6 P1.5 | Large or old file filters and application uninstall review | New features use existing scan and safety systems without expanding protected paths |
-| M7 P2 | Startup items, SSH dashboard, and reversible settings | Every change records its prior state and can be restored in tests |
+## File Reference
 
-## P1 release checks
-
-1. Compare a known scan with macOS allocation reporting.
-2. Confirm missing Full Disk Access produces clear skipped-folder warnings.
-3. Review every path produced by bundled cleanup rules.
-4. Move a low-risk target to the Trash and restore it with Finder.
-5. Check allocation and APFS limitation labels.
-6. Confirm execution prompts unless both `--execute` and `--yes` are present.
+| File | Purpose |
+| --- | --- |
+| `Cargo.toml` | Lists the two crates, their shared version and license, and the lint rules. The rules turn on Clippy's strict checks and forbid `unsafe` code. |
+| `crates/tidymac-core/Cargo.toml` | The library's dependencies: `walkdir`, and `tempfile` for tests. |
+| `crates/tidymac-core/src/lib.rs` | The library's entry point. Makes the `scan` and `size` modules public. |
+| `crates/tidymac-core/src/scan.rs` | `walk_directory` walks a folder without following links or leaving the disk. Has tests. |
+| `crates/tidymac-core/src/size.rs` | `allocated_size` works out the space a file uses on disk. |
+| `crates/tidymac-core/src/rules.rs` | Empty. Will read and check rules. |
+| `crates/tidymac-core/src/safety.rs` | Empty. Will hold `validate_deletable` and `ValidatedPath`. |
+| `crates/tidymac-core/src/clean.rs` | Empty. Will plan cleanups and move items to the Trash. |
+| `crates/tidymac/Cargo.toml` | The program's dependencies: `tidymac-core`. |
+| `crates/tidymac/src/main.rs` | The program's entry point. An empty `main` for now. Will open the terminal interface. |
+| `.github/workflows/ci.yml` | Checks formatting, runs Clippy and the tests, and builds for Apple silicon and Intel. |
